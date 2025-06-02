@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/dmpinheiro/transaction-simulator/config"
 	simulator "github.com/dmpinheiro/transaction-simulator/internal"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -14,6 +15,8 @@ import (
 
 func main() {
 	rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	config := config.New()
 
 
 	db, err := sql.Open("sqlite3", "file:simulator.db?_journal_mode=WAL")
@@ -28,13 +31,17 @@ func main() {
 		log.Fatal("schema:", err)
 	}
 
-	accounts := []string{"A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10"}
+	numAccounts := config.GetInt("num_accounts");
+	log.Printf("Seeding %d accounts", numAccounts);
+	accounts := make([]string, numAccounts)
+	for i := range accounts {
+		accounts[i] = fmt.Sprintf("A%d", i+1)
+	}
 	if err := sim.SeedAccounts(accounts, 1000); err != nil {
 		log.Fatal("seeding:", err)
 	}
 
-	// 5 goroutines, each doing 20 transactions
-	sim.RunConcurrentTransactions(5, 20)
+	sim.RunConcurrentTransactions(5, config.GetInt("transactions_per_goroutine"))
 
 	sim.PrintAccounts()
 	fmt.Println()
