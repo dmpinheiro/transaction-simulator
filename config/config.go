@@ -11,6 +11,7 @@ func New() *viper.Viper {
 
 	viper := viper.New()
 	viper.SetDefault("database.file", "simulator.db")
+	viper.SetDefault("app.port", 3000)
 	viper.SetConfigName("config") // name of config file (without extension)
         viper.SetConfigType("yaml")
 	viper.SetConfigFile(configFile)

@@ -1,43 +1,34 @@
 package simulator
 
 import (
-	"database/sql"
 	"fmt"
 	"log"
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/dmpinheiro/transaction-simulator/internal/domain"
+	"gorm.io/gorm"
 )
 
-
 type Simulator struct {
-	DB *sql.DB
+	DB *gorm.DB
 }
 
-func NewSimulator(db *sql.DB) *Simulator {
+func NewSimulator(db *gorm.DB) *Simulator {
 	return &Simulator{DB: db}
 }
 
 func (s *Simulator) InitSchema() error {
-	_, err := s.DB.Exec(`
-		CREATE TABLE IF NOT EXISTS accounts (
-			id TEXT PRIMARY KEY,
-			balance INTEGER NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS transactions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			from_id TEXT,
-			to_id TEXT,
-			amount INTEGER,
-			time TEXT
-		);
-	`)
-	return err
+	s.DB.AutoMigrate(&domain.Account{}, &domain.Transaction{})
+	return nil
 }
 
 func (s *Simulator) SeedAccounts(ids []string, initialBalance int) error {
+
 	for _, id := range ids {
-		_, err := s.DB.Exec(`INSERT OR IGNORE INTO accounts (id, balance) VALUES (?, ?)`, id, initialBalance)
+		result := s.DB.Create(&domain.Account{ID: id, Balance: initialBalance})
+		err := result.Error
 		if err != nil {
 			return err
 		}
@@ -46,33 +37,13 @@ func (s *Simulator) SeedAccounts(ids []string, initialBalance int) error {
 }
 
 func (s *Simulator) GenerateTransaction() error {
-	tx, err := s.DB.Begin()
-	if err != nil {
-		return err
-	}
 
-	rows, err := tx.Query("SELECT id, balance FROM accounts")
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-	defer rows.Close()
-
-	var accounts []struct {
-		ID      string
-		Balance int
-	}
-	for rows.Next() {
-		var id string
-		var balance int
-		if err := rows.Scan(&id, &balance); err != nil {
-			tx.Rollback()
-			return err
-		}
-		accounts = append(accounts, struct {
-			ID      string
-			Balance int
-		}{id, balance})
+	tx := s.DB.Begin()
+	var accounts []domain.Account
+	result := s.DB.Find(&accounts)
+	if result.Error != nil {
+		log.Printf("Error fetching accounts: %v", result.Error)
+		return result.Error
 	}
 
 	if len(accounts) < 2 {
@@ -82,6 +53,7 @@ func (s *Simulator) GenerateTransaction() error {
 
 	from := accounts[rand.Intn(len(accounts))]
 	to := accounts[rand.Intn(len(accounts))]
+
 	for from.ID == to.ID {
 		to = accounts[rand.Intn(len(accounts))]
 	}
@@ -94,24 +66,29 @@ func (s *Simulator) GenerateTransaction() error {
 	amount := rand.Intn(from.Balance) + 1
 	now := time.Now().Format(time.RFC3339)
 
-	_, err = tx.Exec(`UPDATE accounts SET balance = balance - ? WHERE id = ?`, amount, from.ID)
-	if err != nil {
+	result = tx.Raw(`UPDATE accounts SET balance = balance - ? WHERE id = ?`, amount, from.ID)
+	if result.Error != nil {
 		tx.Rollback()
-		return err
+		return result.Error
 	}
-	_, err = tx.Exec(`UPDATE accounts SET balance = balance + ? WHERE id = ?`, amount, to.ID)
-	if err != nil {
+	result = tx.Raw(`UPDATE accounts SET balance = balance + ? WHERE id = ?`, amount, to.ID)
+	if result.Error != nil {
 		tx.Rollback()
-		return err
+		return result.Error
 	}
-	_, err = tx.Exec(`INSERT INTO transactions (from_id, to_id, amount, time) VALUES (?, ?, ?, ?)`,
+	result = tx.Raw(`INSERT INTO transactions (from_id, to_id, amount, time) VALUES (?, ?, ?, ?)`,
 		from.ID, to.ID, amount, now)
-	if err != nil {
+	if result.Error != nil {
 		tx.Rollback()
-		return err
+		return result.Error
 	}
 
-	return tx.Commit()
+	result = tx.Commit()
+	if result.Error != nil {
+		log.Printf("Error committing transaction: %v", result.Error)
+		return result.Error
+	}
+	return nil
 }
 
 func (s *Simulator) RunConcurrentTransactions(workers, perWorker int) {
@@ -139,25 +116,25 @@ func (s *Simulator) RunConcurrentTransactions(workers, perWorker int) {
 }
 
 func (s *Simulator) PrintAccounts() {
-	rows, _ := s.DB.Query("SELECT id, balance FROM accounts")
-	defer rows.Close()
+	var accounts []domain.Account
+	result := s.DB.Find(&accounts)
+	if result.Error != nil {
+		log.Printf("Error fetching accounts: %v", result.Error)
+		return
+	}
+
 	fmt.Println("Account Balances:")
-	for rows.Next() {
-		var id string
-		var balance int
-		rows.Scan(&id, &balance)
-		fmt.Printf("  %s: %d\n", id, balance)
+
+	for _, account := range accounts {
+		fmt.Printf("  %s: %d\n", account.ID, account.Balance)
 	}
 }
 
 func (s *Simulator) PrintTransactions() {
-	rows, _ := s.DB.Query("SELECT from_id, to_id, amount, time FROM transactions ORDER BY id")
-	defer rows.Close()
+	var transactions []domain.Transaction
+	s.DB.Raw("SELECT from_id, to_id, amount, time FROM transactions ORDER BY id").Scan(&transactions)
 	fmt.Println("Transactions:")
-	for rows.Next() {
-		var fromID, toID, ts string
-		var amount int
-		rows.Scan(&fromID, &toID, &amount, &ts)
-		fmt.Printf("[%s] %s -> %s: %d\n", ts, fromID, toID, amount)
+	for _, transaction := range transactions {
+		fmt.Printf("[%s] %s -> %s: %d\n", transaction.AccountID, transaction.FromID, transaction.ToID, transaction.Amount)
 	}
 }
